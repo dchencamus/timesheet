@@ -1,0 +1,138 @@
+#!/usr/bin/env python
+
+import datetime
+import os
+import sys
+import time
+
+TIMESHEET_PATH = '/home/dchen/timesheet/general'
+VALID_TYPES = (
+    'IN',
+    'OUT',
+    'NEW',
+    'UNKNOWN',
+)
+
+
+def main():
+    mode = os.path.basename(sys.argv[0])
+    try:
+        if mode == 'pi':
+            punchin()
+        elif mode == 'po':
+            punchout()
+        elif mode == 'report':
+            report()
+    except ValueError:
+        print('Invalid timestamp in', TIMESHEET_PATH)
+        print('Please debug manually')
+        sys.exit(1)
+    sys.exit(0)
+
+
+def punchin():
+    ts, typ = parse_last()
+    cur_ts = int(time.time())
+    if typ in ('NEW', 'OUT'):
+        with open(TIMESHEET_PATH, 'a') as f:
+            f.write('IN %d\n' % cur_ts)
+        print('punched in at %d' % cur_ts)
+    else:
+        print('looks like you never punched out, not punching in')
+
+
+# TODO: maybe handle end of day things?
+def punchout():
+    ts, typ = parse_last()
+    cur_ts = int(time.time())
+    if typ in ('NEW', 'IN'):
+        with open(TIMESHEET_PATH, 'a') as f:
+            f.write('OUT %d\n' % cur_ts)
+        print('punched out at %d, worked for %.2f hours' % (cur_ts, ((cur_ts - ts) / 3600)))
+    else:
+        print('looks like you never punched in, not punching out')
+
+
+def report(start=None):
+    if start is None:
+        today = datetime.datetime.now()
+        # start of previous week, starting on a sunday
+        sow = today - datetime.timedelta(days=today.weekday() + 1, weeks=1)
+        sow = sow.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        sow = start
+
+    result = []
+
+    for i in range(7):
+        # start of day
+        sod = sow + datetime.timedelta(days=i)
+        eod = sow + datetime.timedelta(days=i + 1)
+        tot_time = 0
+        for intvl in enumerate_intervals():
+            if sod.timestamp() <= intvl[1] < eod.timestamp():
+                # if an interval crosses days, only count the time since midnight
+                tot_time += intvl[1] - max((intvl[0], sod.timestamp()))
+
+            # corner case: sometimes an interval is started before the end of week but not closed by
+            # the end of the week. In this case, we should add the time in the week to the total
+            # time for the last day
+            if i == 6:
+                if sod.timestamp() <= intvl[0] < eod.timestamp() and intvl[1] >= eod.timestamp():
+                    tot_time += eod.timestamp() - intvl[0]
+        result.append([sod, tot_time])
+
+    for r in result:
+        print("%s\t %.2f" % (r[0].strftime("%a %Y-%m-%d"), r[1] / 3600))
+
+
+# Returns a list of [start, end) intervals for punching in / out
+def enumerate_intervals():
+    result = []
+    with open(TIMESHEET_PATH) as f:
+        lineno = 0
+        for line in f:
+            lineno += 1
+            fields = line.split()
+            ts, typ = parse_fields(fields, lineno)
+            if typ == 'IN':
+                cur_interval = [ts, None]
+            elif typ == 'OUT':
+                cur_interval[1] = ts
+                result.append(cur_interval)
+    return result
+
+
+# returns tuple of int timestamp and event type string. Raises valueerror if invalid timestamp
+def parse_fields(fields, lineno):
+    if len(fields) == 0:
+        return 0, 'NEW'
+
+    if len(fields) != 2:
+        return -1, 'UNKNOWN'
+    typ, ts = fields
+    try:
+        ts = int(ts)
+    except ValueError:
+        print('invalid timestamp %r on line %d' % (ts, lineno))
+        raise
+    if typ not in ('IN', 'OUT'):
+        return -1, 'UNKNOWN'
+    return ts, typ
+
+
+# returns tuple of int timestamp and event type string. Raises valueerror if invalid timestamp
+def parse_last():
+    fields = []
+    lineno = 0
+    with open(TIMESHEET_PATH) as f:
+        for line in f:
+            lineno += 1
+            if line == '':
+                continue
+            fields = line.split()
+    return parse_fields(fields, lineno)
+
+
+if __name__ == '__main__':
+    main()
